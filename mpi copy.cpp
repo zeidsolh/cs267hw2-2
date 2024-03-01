@@ -112,7 +112,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
     // Write this functions
     stesoso++;
     // output the local particles for each process
-    if (stesoso < 4) {
+    if (stesoso < 5) {
         for (int i = 0; i < num_procs; i++) {
             if (i == rank) {
                 std::cout << "Process " << rank << " local particles:" << std::endl;
@@ -127,7 +127,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
                 }
                 std::cout << std::endl;
             }
-            // MPI_Barrier(MPI_COMM_WORLD);
+            MPI_Barrier(MPI_COMM_WORLD);
         }
     }
 
@@ -153,9 +153,6 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
         move(local_particles[i], size);
     }
 
-    // wait for all processes to finish moving particles
-    MPI_Barrier(MPI_COMM_WORLD);
-
     // std::cout << "Moving" << std::endl;
 
     // check if particles need to be sent, and make sure to send them to processors where they would
@@ -174,6 +171,7 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
             }
         }
     }
+
     // std::cout << "Sending" << std::endl;
     // Receive particles from other processors and check if they are ghost particles otherwise add
     // them to local particles
@@ -198,19 +196,19 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
             // for (int j = 0; j < count; j++) {
             int row = received.y / domain_size;
             if (row == rank) {
-                // if it was a ghost particle, remove it from the ghost particles
-                for (int j = 0; j < ghost_particles.size(); j++) {
-                    if (ghost_particles[j].id == received.id) {
-                        ghost_particles.erase(ghost_particles.begin() + j);
-                    }
-                }
                 local_particles.push_back(received);
             } else {
-                ghost_particles.push_back(received);
+                if (std::find_if(ghost_particles.begin(), ghost_particles.end(),
+                                 [&received](const particle_t& p) {
+                                     return p.id == received.id;
+                                 }) == ghost_particles.end()) {
+                    ghost_particles.push_back(received);
+                }
             }
             // }
         }
     }
+
     // std::cout << "Receiving" << std::endl;
 }
 
