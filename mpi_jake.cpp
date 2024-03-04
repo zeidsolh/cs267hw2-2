@@ -9,7 +9,6 @@
 #include <cassert>
 
 
-
 struct Cell {
     std::vector<int> particles; // Indices of particles in each cell
 };
@@ -111,14 +110,19 @@ void init_simulation(particle_t* parts, int num_parts, double size, int rank, in
         }
     }
 
+    // Assert count of all particles across all processes is still the same
+        // std::cout << "0-" << rank << " num particles: " << particles.size() << std::endl;
+        int total_particles = particles.size();
+        int total_lower_particles = lower_particles.size();
+        int total_upper_particles = upper_particles.size();
+        MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        assert(total_particles == num_parts);
+
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, int num_procs) {
 
-    if (rank == 0) {
-        // print out "start"
-        std::cout << "1" << std::endl;
-    }
+    // std::cout << "1-" << rank << " num particles: " << particles.size() << std::endl;
 
     // Compute forces (just for the particles in our band)
         for (int i = 0; i < particles.size(); ++i) {
@@ -138,139 +142,120 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
         for (int i = 0; i < particles.size(); ++i) {
             move(particles[i], size);
         }
-
-    if (rank == 0) {
-        // print out "start"
-        std::cout << "2" << std::endl;
-    }
-
-    // Send and receive updated neighbors
-        if (rank > 0) { // send the particles to the lower neighbor
-            MPI_Send(particles.data(), particles.size(), PARTICLE, rank - 1, 0, MPI_COMM_WORLD);
-        }
-        if (rank < num_procs - 1) { // as the lower neighbor, receive the particles, zero should receive and unblock upwards avoiding deadlock
-            MPI_Recv(upper_particles.data(), upper_particles.size(), PARTICLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-        if (rank < num_procs - 1) { // send the particles to the upper neighbor
-            MPI_Send(particles.data(), particles.size(), PARTICLE, rank + 1, 0, MPI_COMM_WORLD);
-        }
-        if (rank > 0) { // as the upper neighbor, receive the particles, num_procs-1 should receive and unblock downwards avoiding deadlock
-            MPI_Recv(lower_particles.data(), lower_particles.size(), PARTICLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    
+    // Clear particle accelerations
+        for (int i = 0; i < particles.size(); ++i) {
+            particles[i].ax = particles[i].ay = 0;
         }
 
-    if (rank == 0) {
-        // print out "start"
-        std::cout << "3" << std::endl;
-    }
+    // std::cout << "2-" << rank << " num particles: " << particles.size() << std::endl;
 
-    // Rearrange bands for particles that jumped the gap. This covers the case for particles coming into our band (next section is for particles exiting our band)
-    // We will delete here any particles from our neighbors that move into our band, appending to our band as we do so
-    // Because we will append to 
-        // Update which band each particle belongs to by popping and adding particles to the correct band (no communication yet)
-        std::vector<particle_t> particles_upwards; // particles moving upwards from lower_neighbor and into our band. We will overwrite this as the particles we append to our upper neighbor list
-        std::vector<particle_t> particles_downwards; // particles moving downwards from upper_neighbor and into our band. We will overwrite this as the particles we append to our lower neighbor list
+    // Ask neighbors which particles entered our band, update our master copy of particles, then send our master copy to our neighbors
+        std::vector<particle_t> particles_moving_upwards; // particles moving upwards and our of our band. We will overwrite this as the particles we append to our lower neighbor list
+        std::vector<particle_t> particles_moving_downwards; // particles moving downwards and out of our band. We will overwrite this as the particles we append to our upper neighbor list
         double band_size = ((double) size) / ((double) num_procs);
         double y_min = ((double) rank) * band_size; // band lower bound
         double y_max = ((double) (rank + 1)) * band_size; // band upper bound
 
-        // If any particles moved into our band from above, append it to the vector
-        for (int i = 0; i < upper_particles.size(); ++i) {
-            // if the particle is in our band
-            if (upper_particles[i].y < y_max) {
-                assert (upper_particles[i].y >= y_min); // if this is false, then the particle jumped the gap, which is problematic
-                particles_downwards.push_back(upper_particles[i]);
-                particles.push_back(upper_particles[i]);
-                upper_particles.erase(upper_particles.begin() + i);
+        // If any particles exited our band by going up, append it to the vector
+        // If any particles exited our band by going down, append it to the vector
+            for (int i = 0; i < particles.size(); ++i) {
+                if (particles[i].y < y_min) {
+                    particles_moving_downwards.push_back(particles[i]);
+                    particles.erase(particles.begin() + i); // we need to erase the particle from our list if our band master copy is to stay correct
+                }
+                if (particles[i].y >= y_max) {
+                    particles_moving_upwards.push_back(particles[i]);
+                    particles.erase(particles.begin() + i); // we need to erase the particle from our list if our band master copy is to stay correct
+                }
             }
-        }
 
-        // If any particles moved into our band from below, append it to the vector
-        for (int i = 0; i < lower_particles.size(); ++i) {
-            // if the particle is in our band
-            if (lower_particles[i].y >= y_min) {
-                assert (lower_particles[i].y < y_max); // if this is false, then the particle jumped the gap, which is problematic
-                particles_upwards.push_back(lower_particles[i]);
-                lower_particles.erase(lower_particles.begin() + i);
-            }
-        }
+        // std::cout << "2.5-" << rank << " num particles upwards: " << particles_moving_upwards.size() << " num particles downwards: " << particles_moving_downwards.size() << std::endl;
+
+        // std::cout << "3-" << rank << " num particles: " << particles.size() << std::endl;
+
 
         // Communicate with the appropriate neighbors, make sure to also probe and get count of the number of elements we are sending
-        if (rank > 1) { // send particles_downwards to the neighbor below us
-            MPI_Send(particles_downwards.data(), particles_downwards.size(), PARTICLE, rank - 1, 0, MPI_COMM_WORLD);
-        }
-
-        if (rank < num_procs - 2) { // receive particles_downwards from the neighbor above us
-            MPI_Status status;
-            MPI_Probe(rank + 1, 0, MPI_COMM_WORLD, &status);
-            int count;
-            MPI_Get_count(&status, PARTICLE, &count);
-            particles_downwards.resize(count);
-            MPI_Recv(particles_downwards.data(), count, PARTICLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE); // this is now the particles we need to append to our list of upper neighbor particles
-        }
-        
-        if (rank < num_procs - 1) { // send particles_upwards to the neighbor above us
-            MPI_Send(particles_upwards.data(), particles_upwards.size(), PARTICLE, rank + 1, 0, MPI_COMM_WORLD);
-        }
-        
-        if (rank > 0) { // receive particles_upwards from the neighbor below us
-            MPI_Status status;
-            MPI_Probe(rank - 1, 0, MPI_COMM_WORLD, &status);
-            int count;
-            MPI_Get_count(&status, PARTICLE, &count);
-            particles_upwards.resize(count);
-            MPI_Recv(particles_upwards.data(), count, PARTICLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE); // this is now the particles we need to append to our list of lower neighbor particles
-        }
-
-        // Append the particles to the appropriate list
-        for (int i = 0; i < particles_upwards.size(); ++i) {
-            lower_particles.push_back(particles_upwards[i]);
-        }
-        for (int i = 0; i < particles_downwards.size(); ++i) {
-            upper_particles.push_back(particles_downwards[i]);
-        }
-
-
-    if (rank == 0) {
-        // print out "start"
-        std::cout << "5" << std::endl;
-    }
-
-
-    // Cull particles that moved out of the main band we have, append them to the appropriate neighbor list
-        for (int i = 0; i < particles.size(); ++i) {
-            if (particles[i].y < y_min || particles[i].y >= y_max) {
-                if (particles[i].y < y_min) {
-                    lower_particles.push_back(particles[i]);
-                } else {
-                    upper_particles.push_back(particles[i]);
-                }
-                particles.erase(particles.begin() + i);
+            if (rank > 0) { // send particles_downwards to the neighbor below us
+                MPI_Send(particles_moving_downwards.data(), particles_moving_downwards.size(), PARTICLE, rank - 1, 0, MPI_COMM_WORLD);
             }
-        }
+            particles_moving_downwards.clear();
 
-    
-    // Cull particles that moved out of the upper neighbor band or lower neighbor band
-        double lower_neighbor_y = y_min - band_size;
-        double upper_neighbor_y = y_max + band_size;
-        if (lower_neighbor_y < 0) {
-            lower_neighbor_y = 0;
-        }
-        if (upper_neighbor_y > size) {
-            upper_neighbor_y = size;
-        }
-        for (int i = 0; i < lower_particles.size(); ++i) {
-            if (lower_particles[i].y < lower_neighbor_y) {
-                lower_particles.erase(lower_particles.begin() + i);
+            if (rank < num_procs - 1) { // receive particles_moving_downwards from the neighbor above us
+                MPI_Status status;
+                MPI_Probe(rank + 1, 0, MPI_COMM_WORLD, &status);
+                int count;
+                MPI_Get_count(&status, PARTICLE, &count);
+                particles_moving_downwards.resize(count);
+                MPI_Recv(particles_moving_downwards.data(), count, PARTICLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             }
-        }
-        for (int i = 0; i < upper_particles.size(); ++i) {
-            if (upper_particles[i].y >= upper_neighbor_y) {
-                upper_particles.erase(upper_particles.begin() + i);
+            
+            if (rank < num_procs - 1) { // send particles_moving_upwards to the neighbor above us
+                MPI_Send(particles_moving_upwards.data(), particles_moving_upwards.size(), PARTICLE, rank + 1, 0, MPI_COMM_WORLD);
             }
-        }
+            particles_moving_upwards.clear();
+            
+            if (rank > 0) { // receive particles_upwards from the neighbor below us
+                MPI_Status status;
+                MPI_Probe(rank - 1, 0, MPI_COMM_WORLD, &status);
+                int count;
+                MPI_Get_count(&status, PARTICLE, &count);
+                particles_moving_upwards.clear();
+                particles_moving_upwards.resize(count);
+                MPI_Recv(particles_moving_upwards.data(), count, PARTICLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+
+        // std::cout << "4-" << rank << " num particles upwards: " << particles_moving_upwards.size() << " num particles downwards: " << particles_moving_downwards.size() << std::endl;
 
 
 
+        // Append the particles to our master copy since these are now the lists of particles that have entered our band
+            for (int i = 0; i < particles_moving_downwards.size(); ++i) {
+                particles.push_back(particles_moving_downwards[i]);
+            }
+            for (int i = 0; i < particles_moving_upwards.size(); ++i) {
+                particles.push_back(particles_moving_upwards[i]);
+            }
+
+        // std::cout << "6-" << rank << " num particles: " << particles.size() << std::endl;
+
+    // Send our new master copy and receive updated neighbors
+        // Send our master copy to the neighbors below
+            if (rank > 0) {
+                MPI_Send(particles.data(), particles.size(), PARTICLE, rank - 1, 0, MPI_COMM_WORLD);
+            }
+        // Receive the updated neighbors from the neighbors above
+            if (rank < num_procs - 1) {
+                MPI_Status status;
+                MPI_Probe(rank + 1, 0, MPI_COMM_WORLD, &status);
+                int count;
+                MPI_Get_count(&status, PARTICLE, &count);
+                upper_particles.resize(count);
+                MPI_Recv(upper_particles.data(), count, PARTICLE, rank + 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+        // Send our master copy to the neighbors above
+            if (rank < num_procs - 1) {
+                MPI_Send(particles.data(), particles.size(), PARTICLE, rank + 1, 0, MPI_COMM_WORLD);
+            }
+        // Receive the updated neighbors from the neighbors below
+            if (rank > 0) {
+                MPI_Status status;
+                MPI_Probe(rank - 1, 0, MPI_COMM_WORLD, &status);
+                int count;
+                MPI_Get_count(&status, PARTICLE, &count);
+                lower_particles.resize(count);
+                MPI_Recv(lower_particles.data(), count, PARTICLE, rank - 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            }
+
+        // std::cout << "7-" << rank << " num particles: " << particles.size() << std::endl;
+
+    // Assert count of all particles across all processes is still the same
+        // std::cout << "7.5-" << rank << " num particles: " << particles.size() << std::endl;
+        int total_particles = particles.size();
+        int total_lower_particles = lower_particles.size();
+        int total_upper_particles = upper_particles.size();
+        MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        assert(total_particles == num_parts);
 }
 
 void gather_for_save(particle_t* parts, int num_parts, double size, int rank, int num_procs) {
@@ -282,19 +267,32 @@ void gather_for_save(particle_t* parts, int num_parts, double size, int rank, in
     // Then append particles in band of rank 0 to the particles list
     // make sure that we re-populate parts with the particles in the correct order according to particle ID
 
+    // std::cout << "8-" << rank << std::endl;
+
     if (rank == 0) {
-        for (int i = 1; i < num_procs; ++i) {
-            MPI_Recv(parts, num_parts, PARTICLE, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            for (int j = 0; j < num_parts; ++j) {
-                particles.push_back(parts[j]);
-            }
-        }
-        std::sort(particles.begin(), particles.end(), [](particle_t a, particle_t b) { return a.id < b.id; });
-        for (int i = 0; i < num_parts; ++i) {
+        for (int i = 0; i < particles.size(); ++i) {
             parts[i] = particles[i];
         }
+        int parts_idx = particles.size();
+        for (int i = 1; i < num_procs; ++i) {
+            MPI_Status status;
+            MPI_Probe(i, 0, MPI_COMM_WORLD, &status);
+            int count;
+            MPI_Get_count(&status, PARTICLE, &count);
+            std::vector<particle_t> particles_from_band_i(count);
+            MPI_Recv(particles_from_band_i.data(), count, PARTICLE, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            for (int j = 0; j < count; ++j) {
+                parts[parts_idx] = particles_from_band_i[j];
+                parts_idx++;
+            }
+            assert(parts_idx <= num_parts);
+
+        }
+        for (int i = 0; i < particles.size(); ++i) {
+            parts[i] = particles[i];
+        }
+        std::sort(parts, parts + num_parts, [](particle_t a, particle_t b) { return a.id < b.id; });
     } else {
         MPI_Send(particles.data(), particles.size(), PARTICLE, 0, 0, MPI_COMM_WORLD);
     }
-
 }
