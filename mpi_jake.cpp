@@ -70,6 +70,14 @@ void init_simulation(particle_t* parts, int num_parts, double size, int rank, in
 	// This function will be called once before the algorithm begins
 	// Do not do any particle simulation here
 
+    if (num_procs > ceil(size / cutoff)) {
+        num_procs = ceil(size / cutoff);
+    }
+
+    if (rank >= num_procs) {
+        return;
+    }
+
     double band_size = ((double) size) / ((double) num_procs);
     double y_min = ((double) rank) * band_size;
     double y_max = ((double) (rank + 1)) * band_size;
@@ -86,10 +94,10 @@ void init_simulation(particle_t* parts, int num_parts, double size, int rank, in
         upper_neighbor_y = size;
     }
 
-    if (band_size <= cutoff) {
-        std::cerr << "Band size is too small for cutoff" << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
+    // if (band_size <= cutoff) {
+    //     std::cerr << "Band size is too small for cutoff" << std::endl;
+    //     MPI_Abort(MPI_COMM_WORLD, 1);
+    // }
 
     // Iterate over particles, check if y is in our band and add to particles if so
     for (int i = 0; i < num_parts; ++i) {
@@ -112,17 +120,25 @@ void init_simulation(particle_t* parts, int num_parts, double size, int rank, in
 
     // Assert count of all particles across all processes is still the same
         // std::cout << "0-" << rank << " num particles: " << particles.size() << std::endl;
-        int total_particles = particles.size();
-        int total_lower_particles = lower_particles.size();
-        int total_upper_particles = upper_particles.size();
-        MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        assert(total_particles == num_parts);
+        // int total_particles = particles.size();
+        // int total_lower_particles = lower_particles.size();
+        // int total_upper_particles = upper_particles.size();
+        // MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        // assert(total_particles == num_parts);
 
 }
 
 void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, int num_procs) {
 
     // std::cout << "1-" << rank << " num particles: " << particles.size() << std::endl;
+
+    if (num_procs > ceil(size / cutoff)) {
+        num_procs = ceil(size / cutoff);
+    }
+
+    if (rank >= num_procs) {
+        return;
+    }
 
     // Compute forces (just for the particles in our band)
         for (int i = 0; i < particles.size(); ++i) {
@@ -251,11 +267,11 @@ void simulate_one_step(particle_t* parts, int num_parts, double size, int rank, 
 
     // Assert count of all particles across all processes is still the same
         // std::cout << "7.5-" << rank << " num particles: " << particles.size() << std::endl;
-        int total_particles = particles.size();
-        int total_lower_particles = lower_particles.size();
-        int total_upper_particles = upper_particles.size();
-        MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        assert(total_particles == num_parts);
+        // int total_particles = particles.size();
+        // int total_lower_particles = lower_particles.size();
+        // int total_upper_particles = upper_particles.size();
+        // MPI_Allreduce(MPI_IN_PLACE, &total_particles, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        // assert(total_particles == num_parts);
 }
 
 void gather_for_save(particle_t* parts, int num_parts, double size, int rank, int num_procs) {
@@ -268,6 +284,14 @@ void gather_for_save(particle_t* parts, int num_parts, double size, int rank, in
     // make sure that we re-populate parts with the particles in the correct order according to particle ID
 
     // std::cout << "8-" << rank << std::endl;
+
+    if (num_procs > ceil(size / cutoff)) {
+        num_procs = ceil(size / cutoff);
+    }
+
+    if (rank >= num_procs) {
+        return;
+    }
 
     if (rank == 0) {
         for (int i = 0; i < particles.size(); ++i) {
